@@ -7,8 +7,9 @@ from flask import (
 
 from week1.opensearch import get_opensearch
 
-bp = Blueprint('search', __name__, url_prefix='/search')
+import json
 
+bp = Blueprint('search', __name__, url_prefix='/search')
 
 # Process the filters requested by the user and return a tuple that is appropriate for use in: the query, URLs displaying the filter and the display of the applied filters
 # filters -- convert the URL GET structure into an OpenSearch filter query
@@ -91,10 +92,13 @@ def query():
     else:
         query_obj = create_query("*", [], sort, sortDir)
 
-    print("query obj: {}".format(query_obj))
+    print("query obj: \n{}".format(json.dumps(query_obj)))
 
     #### Step 4.b.ii
-    response = None   # TODO: Replace me with an appropriate call to OpenSearch
+    response = opensearch.search(
+        body=query_obj,
+        index='bbuy_products'
+    )
     # Postprocess results here if you so desire
 
     #print(response)
@@ -105,17 +109,181 @@ def query():
     else:
         redirect(url_for("index"))
 
-
 def create_query(user_query, filters, sort="_score", sortDir="desc"):
     print("Query: {} Filters: {} Sort: {}".format(user_query, filters, sort))
     query_obj = {
-        'size': 10,
+        "size": 100,
         "query": {
-            "match_all": {} # Replace me with a query that both searches and filters
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                            "query_string": {
+                                "fields": [
+                                    "name.stemmed^1000",
+                                    "artistName^1050",
+                                    "shortDescription^50",
+                                    "longDescription^10",
+                                    "department"
+                                ],
+                                "query": user_query,
+                                "type": "phrase",
+                                "phrase_slop": 3 
+                            }
+                            }
+                        ],
+                    "filter": filters
+                    }
+                },
+                "boost_mode": "multiply",
+                "score_mode": "multiply",
+                "functions": [
+                    {
+                    "filter": {
+                        "exists": {
+                        "field": "salesRankLongTerm"
+                        }
+                    },
+                    "weight": 16
+                    },
+                    {
+                    "filter": {
+                        "exists": {
+                        "field": "salesRankShortTerm"
+                        }
+                    },
+                    "weight": 14
+                    },
+                    {
+                    "filter": {
+                        "exists": {
+                        "field": "salesRankMediumTerm"
+                        }
+                    },
+                    "weight": 15
+                    },
+                    {
+                    "gauss": {
+                        "salesRankLongTerm": {
+                        "origin": "1",
+                        "scale": 1000,
+                        "decay": 1e-8
+                        }
+                    }
+                    },
+                    {
+                    "gauss": {
+                        "salesRankMediumTerm": {
+                        "origin": "1",
+                        "scale": 1000,
+                        "decay": 1e-8
+                        }
+                    }
+                    },
+                    {
+                    "gauss": {
+                        "salesRankShortTerm": {
+                        "origin": "1",
+                        "scale": 1000,
+                        "decay": 1e-8
+                        }
+                    }
+                    }
+                ]
+            }
         },
         "aggs": {
-            #### Step 4.b.i: create the appropriate query and aggregations here
-
-        }
+                #### Step 4.b.i: create the appropriate query and aggregations here
+                "regularPrice": {
+                "range": {
+                    "field": "regularPrice",
+                    "ranges": [
+                        {   
+                            "key": "$",
+                            "to": 100
+                        },
+                        {
+                            "key": "$$",
+                            "from": 100,
+                            "to": 200
+                        },
+                        {
+                            "key": "$$$",
+                            "from": 200,
+                            "to": 300
+                        },
+                        {
+                            "key": "$$$$",
+                            "from": 300,
+                            "to": 400
+                        },
+                        {
+                            "key": "$$$$$",
+                            "from": 400,
+                            "to": 500
+                        },
+                        {
+                            "key": "$$$$$$",
+                            "from": 500
+                        }
+                    ]
+                }
+            },
+            "department": {
+                "terms": {
+                    "field": "department.keyword",
+                    "size": 10
+                }
+            },
+            "missing_images": {
+                "missing": {
+                    "field": "image.keyword"
+                }
+            }
+        },
+        "highlight": {
+            "fields": {
+                "name": {
+                    "pre_tags": [
+                        "<strong>"
+                    ],
+                    "post_tags": [
+                        "</strong>"
+                    ]
+                },
+                "artistName": {
+                    "pre_tags": [
+                        "<strong>"
+                    ],
+                    "post_tags": [
+                        "</strong>"
+                    ]
+                },
+                "shortDescription": {
+                    "pre_tags": [
+                        "<strong>"
+                    ],
+                    "post_tags": [
+                        "</strong>"
+                    ]
+                },
+                "longDescription": {
+                    "pre_tags": [
+                        "<strong>"
+                    ],
+                    "post_tags": [
+                        "</strong>"
+                    ]
+                }
+            }
+        },
+        "sort": [
+            {
+            sort: {
+                "order": sortDir
+            }
+            }
+        ]
     }
     return query_obj

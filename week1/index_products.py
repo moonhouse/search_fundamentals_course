@@ -35,7 +35,7 @@ mappings =  [
             "frequentlyPurchasedWith/*/text()", "frequentlyPurchasedWith",# Note the match all here to get the subfields
             "accessories/*/text()", "accessories",# Note the match all here to get the subfields
             "relatedProducts/*/text()", "relatedProducts",# Note the match all here to get the subfields
-            "crossSell/text()", "crossSell",
+            "crossSell/text()", "crossSell", # This isn't actually present anywhere
             "salesRankShortTerm/text()", "salesRankShortTerm",
             "salesRankMediumTerm/text()", "salesRankMediumTerm",
             "salesRankLongTerm/text()", "salesRankLongTerm",
@@ -80,12 +80,29 @@ mappings =  [
 
         ]
 
+fields_with_multiple_values = [
+                    "frequentlyPurchasedWith",
+                    "accessories",
+                    "relatedProducts",
+                    "categoryPath",
+                    "categoryPathIds",
+                    "features" 
+        ]
+
 def get_opensearch():
     host = 'localhost'
     port = 9200
     auth = ('admin', 'admin')
     #### Step 2.a: Create a connection to OpenSearch
-    client = None
+    client = OpenSearch(
+        hosts=[{'host': host, 'port': port}],
+        http_compress=True,  # enables gzip compression for request bodies
+        http_auth=auth,
+        use_ssl=True,
+        verify_certs=False,
+        ssl_assert_hostname=False,  
+        ssl_show_warn=False,
+    )
     return client
 
 
@@ -102,14 +119,34 @@ def index_file(file, index_name):
         for idx in range(0, len(mappings), 2):
             xpath_expr = mappings[idx]
             key = mappings[idx + 1]
-            doc[key] = child.xpath(xpath_expr)
+            # Trying to extract single values for fields where there are only one.
+            # This leads that we don't have to do [0] in a lot of places in the jinja templates.
+            if key in fields_with_multiple_values:
+                doc[key] = child.xpath(xpath_expr)
+            elif type(child.xpath(xpath_expr)) == list and len(child.xpath(xpath_expr))==1:
+                doc[key] = child.xpath(xpath_expr)[0]
+            elif type(child.xpath(xpath_expr)) == list and len(child.xpath(xpath_expr))==0:
+                doc[key] = None
+            else:
+                doc[key] = child.xpath(xpath_expr)
         #print(doc)
         if 'productId' not in doc or len(doc['productId']) == 0:
             continue
-        #### Step 2.b: Create a valid OpenSearch Doc and bulk index 2000 docs at a time
-        the_doc = None
-        docs.append(the_doc)
+        # This is just a nice to have when we want a listing of products that have unique images.
+        doc['hasImage'] = 'image' in doc and doc['image'] is not None and 'products/nonsku/' not in doc['image']
 
+        #### Step 2.b: Create a valid OpenSearch Doc and bulk index 2000 docs at a time
+        the_doc = doc
+        the_doc['_id'] = doc['sku']
+        the_doc['_index'] = index_name
+        docs.append(the_doc)
+        if docs_indexed % 2000 == 0:
+            bulk(client, docs)
+            docs_indexed += len(docs)
+            docs = []
+    if len(docs) > 0:
+        bulk(client, docs)
+    docs_indexed += len(docs)
     return docs_indexed
 
 @click.command()
